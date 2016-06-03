@@ -119,18 +119,13 @@ type Size struct {
 // GetSize returns the current size of the user's terminal. If t.In is nil or it doesn't have a file
 // description, nil is returned.
 func (t TTY) GetSize() *Size {
-	if t.In == nil {
+	// use stdout stream because Windows requires it. In Mac and Linux also stdin would work.
+	_, stdout, _ := term.StdStreams()
+	fd, isTerm := term.GetFdInfo(stdout)
+	if !isTerm {
 		return nil
 	}
-
-	in := t.In
-
-	desc, ok := in.(fd)
-	if !ok {
-		return nil
-	}
-
-	return GetSize(desc.Fd())
+	return GetSize(fd)
 }
 
 // GetSize returns the current size of the terminal associated with fd.
