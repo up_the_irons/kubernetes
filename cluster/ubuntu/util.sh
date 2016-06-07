@@ -231,7 +231,7 @@ EOF
 
 # Create ~/kube/systemd/etcd.service with proper contents
 function create-systemd-etcd() {
-  mkdir ~/kube/systemd 2>/dev/null
+  mkdir -p ~/kube/systemd
 
   cat <<EOF > ~/kube/systemd/etcd.service
 [Unit]
@@ -347,7 +347,7 @@ EOF
 
 # Create ~/kube/systemd/flanneld.service
 function create-systemd-flanneld() {
-  mkdir ~/kube/systemd 2>/dev/null
+  mkdir -p ~/kube/systemd
 
   cat <<EOF > ~/kube/systemd/flanneld.service
 [Unit]
@@ -527,22 +527,25 @@ function provision-master() {
       cp ~/kube/init_conf/* /etc/init/
       cp ~/kube/init_scripts/* /etc/init.d/
 
-      if [ -d /lib/systemd/system/ ]; then
-        cp ~/kube/systemd/* /lib/systemd/system/
-
-        # We're using the systemd version, so remove Upstart and SysV configs
-        rm -f /etc/init/flanneld.conf /etc/init.d/flanneld
-
-        systemctl daemon-reload
-        systemctl enable etcd flanneld
-        systemctl start etcd flanneld
-      fi
-
       groupadd -f -r kube-cert
       ${PROXY_SETTING} DEBUG='${DEBUG}' ~/kube/make-ca-cert.sh \"${MASTER_IP}\" \"${EXTRA_SANS}\"
       mkdir -p /opt/bin/
       cp ~/kube/master/* /opt/bin/
-      service etcd start
+
+      if [ -d /lib/systemd/system/ ]; then
+        cp ~/kube/systemd/* /lib/systemd/system/
+
+        # We are using the systemd version, so remove Upstart and SysV configs
+        rm -f /etc/init/flanneld.conf /etc/init.d/flanneld \
+	      /etc/init/etcd.conf /etc/init.d/etcd
+
+        systemctl daemon-reload
+        systemctl enable etcd flanneld
+        systemctl start etcd
+      else
+        service etcd start
+      fi
+
       if ${NEED_RECONFIG_DOCKER}; then FLANNEL_NET=\"${FLANNEL_NET}\" KUBE_CONFIG_FILE=\"${KUBE_CONFIG_FILE}\" DOCKER_OPTS=\"${DOCKER_OPTS}\" ~/kube/reconfDocker.sh a; fi
       '" || {
       echo "Deploying master on machine ${MASTER_IP} failed"
@@ -622,20 +625,22 @@ function provision-node() {
       cp ~/kube/init_conf/* /etc/init/
       cp ~/kube/init_scripts/* /etc/init.d/
       mkdir -p /opt/bin/
+      cp ~/kube/minion/* /opt/bin
 
       if [ -d /lib/systemd/system/ ]; then
         cp ~/kube/systemd/* /lib/systemd/system/
 
-        # We're using the systemd version, so remove Upstart and SysV configs
-        rm -f /etc/init/flanneld.conf /etc/init.d/flanneld
+        # We are using the systemd version, so remove Upstart and SysV configs
+        rm -f /etc/init/flanneld.conf /etc/init.d/flanneld \
+	      /etc/init/etcd.conf /etc/init.d/etcd
 
         systemctl daemon-reload
         systemctl enable flanneld
         systemctl start flanneld
       fi
 
-      cp ~/kube/minion/* /opt/bin
       ${SERVICE_STARTS}
+
       if ${NEED_RECONFIG_DOCKER}; then KUBE_CONFIG_FILE=\"${KUBE_CONFIG_FILE}\" DOCKER_OPTS=\"${DOCKER_OPTS}\" ~/kube/reconfDocker.sh i; fi
       '" || {
       echo "Deploying node on machine ${1#*@} failed"
@@ -736,24 +741,26 @@ function provision-masterandnode() {
       cp ~/kube/init_conf/* /etc/init/
       cp ~/kube/init_scripts/* /etc/init.d/
 
-      if [ -d /lib/systemd/system/ ]; then
-        cp ~/kube/systemd/* /lib/systemd/system/
-
-        # We're using the systemd version, so remove Upstart and SysV configs
-        rm -f /etc/init/flanneld.conf /etc/init.d/flanneld
-
-        systemctl daemon-reload
-        systemctl enable etcd flanneld
-        systemctl start etcd flanneld
-      fi
-
       groupadd -f -r kube-cert
       ${PROXY_SETTING} DEBUG='${DEBUG}' ~/kube/make-ca-cert.sh \"${MASTER_IP}\" \"${EXTRA_SANS}\"
       mkdir -p /opt/bin/
       cp ~/kube/master/* /opt/bin/
       cp ~/kube/minion/* /opt/bin/
 
-      service etcd start
+      if [ -d /lib/systemd/system/ ]; then
+        cp ~/kube/systemd/* /lib/systemd/system/
+
+        # We are using the systemd version, so remove Upstart and SysV configs
+        rm -f /etc/init/flanneld.conf /etc/init.d/flanneld \
+	      /etc/init/etcd.conf /etc/init.d/etcd
+
+        systemctl daemon-reload
+        systemctl enable etcd flanneld
+        systemctl start etcd
+      else
+        service etcd start
+      fi
+
       if ${NEED_RECONFIG_DOCKER}; then FLANNEL_NET=\"${FLANNEL_NET}\" KUBE_CONFIG_FILE=\"${KUBE_CONFIG_FILE}\" DOCKER_OPTS=\"${DOCKER_OPTS}\" ~/kube/reconfDocker.sh ai; fi
       '" || {
       echo "Deploying master and node on machine ${MASTER_IP} failed"
@@ -801,7 +808,8 @@ function kube-down() {
               /etc/init/etcd.conf \
               /etc/init.d/etcd \
               /etc/default/etcd \
-              /lib/systemd/system/etcd.service
+              /lib/systemd/system/etcd.service \
+              /lib/systemd/system/flanneld.service
 
             rm -rf /infra*
             rm -rf /srv/kubernetes
@@ -890,6 +898,7 @@ function push-master() {
           /etc/init/flanneld.conf \
           /etc/init.d/etcd \
           /lib/systemd/system/etcd.service \
+          /lib/systemd/system/flanneld.service \
           /etc/init.d/kube* \
           /etc/init.d/flanneld \
           /etc/default/etcd \
@@ -1009,7 +1018,8 @@ function kube-push() {
             /etc/init/etcd.conf \
             /etc/init.d/etcd \
             /etc/default/etcd \
-            /lib/systemd/system/etcd.service
+            /lib/systemd/system/etcd.service \
+            /lib/systemd/system/flanneld.service
         '" || echo "Cleaning on master ${i#*@} failed"
       elif [[ "${roles_array[${ii}]}" == "i" ]]; then
         echo "Cleaning on node ${i#*@}"
