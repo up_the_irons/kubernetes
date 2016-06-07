@@ -166,6 +166,14 @@ function verify-cluster() {
 }
 
 function verify-master() {
+  # systemd won't automatically start the LSB ones
+  ssh $SSH_OPTS -t "${MASTER}" "
+    set +e
+    if [ -d /lib/systemd/system/ ]; then
+      sudo systemctl start kube-apiserver kube-controller-manager kube-scheduler
+    fi
+  "
+
   # verify master has all required daemons
   echo -n "Validating master"
   local -a required_daemon=("kube-apiserver" "kube-controller-manager" "kube-scheduler")
@@ -193,6 +201,14 @@ function verify-master() {
 }
 
 function verify-node() {
+  # systemd won't automatically start the LSB ones
+  ssh $SSH_OPTS -t "${MASTER}" "
+    set +e
+    if [ -d /lib/systemd/system/ ]; then
+      sudo systemctl start kube-proxy kubelet docker
+    fi
+  "
+
   # verify node has all required daemons
   echo -n "Validating ${1}"
   local -a required_daemon=("kube-proxy" "kubelet" "docker")

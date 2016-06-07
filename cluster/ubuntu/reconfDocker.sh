@@ -52,6 +52,11 @@ function restart_docker {
     fi
     attempt=$((attempt+1))
     sleep 3
+
+    # Should be running, but if not... try starting flannel
+    if [ -d /lib/systemd/system/ ]; then
+      systemctl start flanneld
+    fi
   done
   
   sudo ip link set dev docker0 down
