@@ -229,6 +229,29 @@ ETCD_OPTS="\
 EOF
 }
 
+# Create ~/kube/systemd/etcd.service with proper contents
+function create-systemd-etcd() {
+  mkdir ~/kube/systemd 2>/dev/null
+
+  cat <<EOF > ~/kube/systemd/etcd.service
+[Unit]
+Description=etcd key-value store
+Documentation=https://github.com/coreos/etcd
+
+[Service]
+User=root
+Type=notify
+Environment=ETCD_NAME=%m
+ExecStart=/opt/bin/etcd -name infra -listen-client-urls http://127.0.0.1:4001,http://${1}:4001 -advertise-client-urls http://${1}:4001
+Restart=always
+RestartSec=10s
+LimitNOFILE=40000
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 # Create ~/kube/default/kube-apiserver with proper contents.
 # $1: CIDR block for service addresses.
 # $2: Admission Controllers to invoke in the API server.
@@ -319,6 +342,25 @@ function create-flanneld-opts() {
 FLANNEL_OPTS="--etcd-endpoints=http://${1}:4001 \
  --ip-masq \
  --iface=${2}"
+EOF
+}
+
+# Create ~/kube/systemd/flanneld.service
+function create-systemd-flanneld() {
+  mkdir ~/kube/systemd 2>/dev/null
+
+  cat <<EOF > ~/kube/systemd/flanneld.service
+[Unit]
+Description=Flanneld overlay address etcd agent
+After=network.target
+
+[Service]
+ExecStart=/opt/bin/flanneld --etcd-endpoints=http://${1}:4001 --ip-masq --iface=${2}
+
+Type=notify
+
+[Install]
+WantedBy=multi-user.target
 EOF
 }
 
@@ -468,6 +510,7 @@ function provision-master() {
 
     setClusterInfo
     create-etcd-opts '${MASTER_IP}'
+    create-systemd-etcd '${MASTER_IP}'
     create-kube-apiserver-opts \
       '${SERVICE_CLUSTER_IP_RANGE}' \
       '${ADMISSION_CONTROL}' \
@@ -476,12 +519,24 @@ function provision-master() {
     create-kube-controller-manager-opts '${NODE_IPS}'
     create-kube-scheduler-opts
     create-flanneld-opts '127.0.0.1' '${MASTER_IP}'
+    create-systemd-flanneld '127.0.0.1' '${MASTER_IP}'
     FLANNEL_OTHER_NET_CONFIG='${FLANNEL_OTHER_NET_CONFIG}' sudo -E -p '[sudo] password to start master: ' -- /bin/bash -ce '
       ${BASH_DEBUG_FLAGS}
 
       cp ~/kube/default/* /etc/default/
       cp ~/kube/init_conf/* /etc/init/
       cp ~/kube/init_scripts/* /etc/init.d/
+
+      if [ -d /lib/systemd/system/ ]; then
+        cp ~/kube/systemd/* /lib/systemd/system/
+
+        # We're using the systemd version, so remove Upstart and SysV configs
+        rm -f /etc/init/flanneld.conf /etc/init.d/flanneld
+
+        systemctl daemon-reload
+        systemctl enable etcd flanneld
+        systemctl start etcd flanneld
+      fi
 
       groupadd -f -r kube-cert
       ${PROXY_SETTING} DEBUG='${DEBUG}' ~/kube/make-ca-cert.sh \"${MASTER_IP}\" \"${EXTRA_SANS}\"
@@ -559,6 +614,7 @@ function provision-node() {
       '${MASTER_IP}' \
       '${KUBE_PROXY_EXTRA_OPTS}'
     create-flanneld-opts '${MASTER_IP}' '${1#*@}'
+    create-systemd-flanneld '${MASTER_IP}' '${1#*@}'
 
     sudo -E -p '[sudo] password to start node: ' -- /bin/bash -ce '    
       ${BASH_DEBUG_FLAGS}
@@ -566,6 +622,18 @@ function provision-node() {
       cp ~/kube/init_conf/* /etc/init/
       cp ~/kube/init_scripts/* /etc/init.d/
       mkdir -p /opt/bin/
+
+      if [ -d /lib/systemd/system/ ]; then
+        cp ~/kube/systemd/* /lib/systemd/system/
+
+        # We're using the systemd version, so remove Upstart and SysV configs
+        rm -f /etc/init/flanneld.conf /etc/init.d/flanneld
+
+        systemctl daemon-reload
+        systemctl enable flanneld
+        systemctl start flanneld
+      fi
+
       cp ~/kube/minion/* /opt/bin
       ${SERVICE_STARTS}
       if ${NEED_RECONFIG_DOCKER}; then KUBE_CONFIG_FILE=\"${KUBE_CONFIG_FILE}\" DOCKER_OPTS=\"${DOCKER_OPTS}\" ~/kube/reconfDocker.sh i; fi
@@ -640,6 +708,7 @@ function provision-masterandnode() {
 
     setClusterInfo
     create-etcd-opts '${MASTER_IP}'
+    create-systemd-etcd '${MASTER_IP}'
     create-kube-apiserver-opts \
       '${SERVICE_CLUSTER_IP_RANGE}' \
       '${ADMISSION_CONTROL}' \
@@ -659,12 +728,24 @@ function provision-masterandnode() {
       '${MASTER_IP}' \
       '${KUBE_PROXY_EXTRA_OPTS}'
     create-flanneld-opts '127.0.0.1' '${MASTER_IP}'
+    create-systemd-flanneld '127.0.0.1' '${MASTER_IP}'
 
     FLANNEL_OTHER_NET_CONFIG='${FLANNEL_OTHER_NET_CONFIG}' sudo -E -p '[sudo] password to start master: ' -- /bin/bash -ce ' 
       ${BASH_DEBUG_FLAGS}
       cp ~/kube/default/* /etc/default/
       cp ~/kube/init_conf/* /etc/init/
       cp ~/kube/init_scripts/* /etc/init.d/
+
+      if [ -d /lib/systemd/system/ ]; then
+        cp ~/kube/systemd/* /lib/systemd/system/
+
+        # We're using the systemd version, so remove Upstart and SysV configs
+        rm -f /etc/init/flanneld.conf /etc/init.d/flanneld
+
+        systemctl daemon-reload
+        systemctl enable etcd flanneld
+        systemctl start etcd flanneld
+      fi
 
       groupadd -f -r kube-cert
       ${PROXY_SETTING} DEBUG='${DEBUG}' ~/kube/make-ca-cert.sh \"${MASTER_IP}\" \"${EXTRA_SANS}\"
@@ -719,7 +800,8 @@ function kube-down() {
               /opt/bin/etcd* \
               /etc/init/etcd.conf \
               /etc/init.d/etcd \
-              /etc/default/etcd
+              /etc/default/etcd \
+              /lib/systemd/system/etcd.service
 
             rm -rf /infra*
             rm -rf /srv/kubernetes
@@ -807,6 +889,7 @@ function push-master() {
           /etc/init/kube* \
           /etc/init/flanneld.conf \
           /etc/init.d/etcd \
+          /lib/systemd/system/etcd.service \
           /etc/init.d/kube* \
           /etc/init.d/flanneld \
           /etc/default/etcd \
@@ -925,7 +1008,8 @@ function kube-push() {
             /opt/bin/etcd* \
             /etc/init/etcd.conf \
             /etc/init.d/etcd \
-            /etc/default/etcd
+            /etc/default/etcd \
+            /lib/systemd/system/etcd.service
         '" || echo "Cleaning on master ${i#*@} failed"
       elif [[ "${roles_array[${ii}]}" == "i" ]]; then
         echo "Cleaning on node ${i#*@}"
